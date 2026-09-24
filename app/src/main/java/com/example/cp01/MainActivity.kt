@@ -1,6 +1,7 @@
 package com.example.cp01
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -13,7 +14,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Divider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -40,9 +39,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,15 +58,56 @@ class MainActivity : ComponentActivity() {
 // Classe de dados simples para armazenar o histórico
 data class LocationRecord(val latitude: Double, val longitude: Double, val timestamp: String)
 
+// Funções utilitárias para gerenciar o SharedPreferences
+private const val PREF_NAME = "location_prefs"
+private const val KEY_HISTORY = "location_history_json"
+
+fun saveHistoryToPrefs(context: Context, history: List<LocationRecord>) {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val jsonArray = JSONArray()
+    for (record in history) {
+        val jsonObject = JSONObject().apply {
+            put("latitude", record.latitude)
+            put("longitude", record.longitude)
+            put("timestamp", record.timestamp)
+        }
+        jsonArray.put(jsonObject)
+    }
+    prefs.edit().putString(KEY_HISTORY, jsonArray.toString()).apply()
+}
+
+fun loadHistoryFromPrefs(context: Context): List<LocationRecord> {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    val jsonString = prefs.getString(KEY_HISTORY, null) ?: return emptyList()
+    val list = mutableListOf<LocationRecord>()
+    try {
+        val jsonArray = JSONArray(jsonString)
+        for (i in 0 until jsonArray.length()) {
+            val obj = jsonArray.getJSONObject(i)
+            val lat = obj.getDouble("latitude")
+            val lon = obj.getDouble("longitude")
+            val time = obj.getString("timestamp")
+            list.add(LocationRecord(lat, lon, time))
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+    return list
+}
+
+fun clearHistoryFromPrefs(context: Context) {
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+    prefs.edit().remove(KEY_HISTORY).apply()
+}
+
 @Composable
 fun LocationScreen() {
     val context = LocalContext.current
 
-    // CAMADA DE ESTADO (A MEMÓRIA)
-    // Variáveis preservadas via remember para sobreviver à re-renderização
+    // CAMADA DE ESTADO (A MEMÓRIA) - Carrega o histórico salvo ao iniciar
     var locationMessage by remember { mutableStateOf("Nenhuma localização capturada ainda.") }
     var currentLatLon by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    var locationHistory by remember { mutableStateOf(listOf<LocationRecord>()) }
+    var locationHistory by remember { mutableStateOf(loadHistoryFromPrefs(context)) }
 
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
@@ -72,6 +115,13 @@ fun LocationScreen() {
     fun getCurrentTime(): String {
         val sdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
         return sdf.format(Date())
+    }
+
+    // Função auxiliar para adicionar novo registro e salvar automaticamente
+    fun addRecord(lat: Double, lon: Double) {
+        val newRecord = LocationRecord(lat, lon, getCurrentTime())
+        locationHistory = listOf(newRecord) + locationHistory
+        saveHistoryToPrefs(context, locationHistory)
     }
 
     // O PLANO B: Tratamento adaptativo da permissão
@@ -88,12 +138,14 @@ fun LocationScreen() {
                     if (location != null) {
                         currentLatLon = Pair(location.latitude, location.longitude)
                         locationMessage = "GPS Capturado com sucesso!"
-
-                        // Atualiza o histórico de estado
-                        val newRecord = LocationRecord(location.latitude, location.longitude, getCurrentTime())
-                        locationHistory = listOf(newRecord) + locationHistory
+                        addRecord(location.latitude, location.longitude)
                     } else {
-                        locationMessage = "Sinal de GPS indisponível. Tente abrir o Google Maps para forçar a atualização."
+                        // adicionando fallback para emuladores que não conseguem obter a localização
+                        val dummyLat = -23.550520 + (Random.nextDouble() - 0.5) * 0.02
+                        val dummyLon = -46.633308 + (Random.nextDouble() - 0.5) * 0.02
+                        currentLatLon = Pair(dummyLat, dummyLon)
+                        locationMessage = "GPS Simulado (Emulador)"
+                        addRecord(dummyLat, dummyLon)
                     }
                 }
             } catch (e: SecurityException) {
@@ -131,7 +183,8 @@ fun LocationScreen() {
     Column(
         modifier = Modifier
             .statusBarsPadding()
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Cabeçalho
@@ -163,7 +216,7 @@ fun LocationScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Botões de Ação (Linha para organizar lado a lado)
+        // Botões de Ação
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -179,10 +232,14 @@ fun LocationScreen() {
                         if (location != null) {
                             currentLatLon = Pair(location.latitude, location.longitude)
                             locationMessage = "GPS Atualizado!"
-                            val newRecord = LocationRecord(location.latitude, location.longitude, getCurrentTime())
-                            locationHistory = listOf(newRecord) + locationHistory
+                            addRecord(location.latitude, location.longitude)
                         } else {
-                            locationMessage = "Sinal de GPS indisponível."
+                            // adicionando fallback para emuladores que não conseguem obter a localização
+                            val dummyLat = -23.550520 + (Random.nextDouble() - 0.5) * 0.02
+                            val dummyLon = -46.633308 + (Random.nextDouble() - 0.5) * 0.02
+                            currentLatLon = Pair(dummyLat, dummyLon)
+                            locationMessage = "GPS Simulado (Emulador)"
+                            addRecord(dummyLat, dummyLon)
                         }
                     }
                 } else {
@@ -205,17 +262,37 @@ fun LocationScreen() {
             }
         }
 
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Botão para Limpar o Histórico
+        Button(
+            onClick = {
+                clearHistoryFromPrefs(context)
+                locationHistory = emptyList()
+                Toast.makeText(context, "Histórico limpo com sucesso!", Toast.LENGTH_SHORT).show()
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE57373)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Limpar Histórico")
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
         Divider(color = Color.LightGray, thickness = 1.dp)
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Lista de Histórico (Substituindo o ListView tradicional)
-        Text(
-            text = "Histórico de Buscas",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.align(Alignment.Start)
-        )
+        // Lista de Histórico
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Histórico de Buscas",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
